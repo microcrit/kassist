@@ -1,0 +1,15 @@
+[package]
+name = "cakewalk"
+version = "0.1.0"
+edition = "2024"
+description = "Unified custom-tool definitions and Python bridge for Krita plugins"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+commonext = { path = "../commonext" }
+components = { path = "../components" }
+naga = { version = "26", features = ["glsl-in"], optional = true }
+wgpu = { version = "26", features = ["glsl"], optional = true }
+
+[features]
+gpu = ["dep:naga", "dep:wgpu"]

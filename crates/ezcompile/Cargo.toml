@@ -1,0 +1,10 @@
+[package]
+name = "ezcompile"
+version = "0.1.0"
+edition = "2024"
+description = "Build and package kassist plugins"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+cakewalk = { path = "../cakewalk" }
+stonecutter = { path = "../stonecutter" }

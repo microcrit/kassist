@@ -1,0 +1,13 @@
+[package]
+name = "cakewalk_modifier"
+version = "0.1.0"
+edition = "2024"
+description = "Cakewalk modifier tools for Krita"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+components = { path = "../../crates/components" }
+stonecutter = { path = "../../crates/stonecutter", features = ["http-client"] }

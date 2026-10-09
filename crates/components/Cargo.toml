@@ -1,0 +1,9 @@
+[package]
+name = "components"
+version = "0.1.0"
+edition = "2021"
+description = "Framework-neutral UI component model for kassist Krita plugins"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+commonext = { path = "../commonext" }

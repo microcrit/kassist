@@ -1,0 +1,22 @@
+[Unit]
+Description=kassist licensing and PayPal webhook service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kassist
+Group=kassist
+WorkingDirectory=/var/lib/kassist
+EnvironmentFile=/etc/kassist/licensing.env
+ExecStart=/opt/kassist/licensing
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kassist
+
+[Install]
+WantedBy=multi-user.target
