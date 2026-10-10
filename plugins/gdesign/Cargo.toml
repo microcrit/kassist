@@ -1,13 +1,14 @@
 [package]
-name = "shadeproject"
+name = "gdesign"
 version = "0.1.0"
-edition = "2021"
-description = "Lighting-reference plugin core for Krita"
+edition = "2024"
+description = "Graphic-design layout, masks, and rich text for Krita"
 license = "MIT OR Apache-2.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+cakewalk = { path = "../../crates/cakewalk" }
 components = { path = "../../crates/components" }
 stonecutter = { path = "../../crates/stonecutter", features = ["http-client"] }

@@ -1,6 +1,7 @@
 """Cakewalk modifier and manual-brush docker."""
 
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTabWidget, QVBoxLayout, QWidget
 
 from . import kassist_krita as krita
@@ -65,8 +66,11 @@ class CakewalkDocker(DockWidget):
         self.brush_layout.addWidget(self.brush_status)
         pages.addTab(self.brush_page, "Brushes")
         self.tool_panel = None
-        self.reload_brushes()
+        self.brush_status.setText("Loading Cakewalk brushes…")
         self.setWidget(content)
+        # Building a ToolPanel creates a real preview for the selected brush.
+        # Defer it until Krita has finished restoring the main window.
+        QTimer.singleShot(0, self.reload_brushes)
 
     def canvasChanged(self, canvas):
         self.canvas = canvas
@@ -121,7 +125,6 @@ class CakewalkDocker(DockWidget):
         layer = krita.find_node(document, HAIR_GUIDE_LAYER) if document else None
         if layer:
             layer.remove()
-            document.refreshProjection()
         self.status.setText("Cleared Cakewalk hair guides.")
 
     def _plug_directory(self):

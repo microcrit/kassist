@@ -19,6 +19,7 @@ from . import kassist_krita as krita
 from .kassist_components import Panel
 
 TABLET_EVENTS = (QEvent.TabletPress, QEvent.TabletMove, QEvent.TabletRelease)
+MOUSE_EVENTS = (QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.MouseButtonRelease)
 TOUCH_EVENTS = (QEvent.TouchBegin, QEvent.TouchUpdate, QEvent.TouchEnd)
 _CANVAS_HOOKS = []
 
@@ -158,8 +159,6 @@ class PixelSurface:
 
     def commit(self, document, node):
         krita.write_pixels_rgba(node, 0, 0, self.width, self.height, bytes(self.data), document)
-        node.refreshProjection(0, 0, self.width, self.height)
-        document.refreshProjection()
 
     def source_rgba(self, x, y):
         if not (0 <= x < self.width and 0 <= y < self.height):
@@ -294,10 +293,20 @@ def edge_detect_brush(**options):
 class CanvasInputInterceptor(QObject):
     """Event filter retaining pressure/touch data and a transform snapshot per event."""
     def __init__(self, canvas_widget, callback=None, parent=None):
+        if not hasattr(canvas_widget, "setAttribute") or not hasattr(canvas_widget, "installEventFilter"):
+            raise RuntimeError("Krita did not expose a Qt canvas widget for Cakewalk input")
         super().__init__(parent or canvas_widget); self.canvas_widget, self.callback, self.samples = canvas_widget, callback, []
-        canvas_widget.setAttribute(Qt.WA_AcceptTouchEvents, True); canvas_widget.installEventFilter(self)
+        self.watched_widgets = [canvas_widget]
+        for child in canvas_widget.findChildren(QWidget):
+            if hasattr(child, "installEventFilter"):
+                self.watched_widgets.append(child)
+        canvas_widget.setAttribute(Qt.WA_AcceptTouchEvents, True)
+        for widget in self.watched_widgets: widget.installEventFilter(self)
     def detach(self):
-        if self.canvas_widget: self.canvas_widget.removeEventFilter(self)
+        for widget in self.watched_widgets:
+            try: widget.removeEventFilter(self)
+            except RuntimeError: pass
+        self.watched_widgets = []
         self.canvas_widget = None
     def _sample(self, kind, position, pressure=1, rotation=0, x_tilt=0, y_tilt=0, touch_id=-1):
         transform = CanvasTransform.current(self.canvas_widget)
@@ -308,11 +317,15 @@ class CanvasInputInterceptor(QObject):
         if consume: event.accept()
         return consume
     def eventFilter(self, watched, event):
-        if watched is not self.canvas_widget: return super().eventFilter(watched, event)
+        if watched not in self.watched_widgets: return super().eventFilter(watched, event)
         if event.type() in TABLET_EVENTS:
             names = {QEvent.TabletPress:"tablet_press", QEvent.TabletMove:"tablet_move", QEvent.TabletRelease:"tablet_release"}
             position = event.position() if hasattr(event, "position") else event.posF()
             return self._emit(self._sample(names[event.type()], QPointF(position), event.pressure(), _call(event,"rotation",0), _call(event,"xTilt",0), _call(event,"yTilt",0)), event)
+        if event.type() in MOUSE_EVENTS:
+            names = {QEvent.MouseButtonPress:"tablet_press", QEvent.MouseMove:"tablet_move", QEvent.MouseButtonRelease:"tablet_release"}
+            position = event.position() if hasattr(event, "position") else event.localPos()
+            return self._emit(self._sample(names[event.type()], QPointF(position)), event)
         if event.type() in TOUCH_EVENTS:
             names = {QEvent.TouchBegin:"touch_begin", QEvent.TouchUpdate:"touch_update", QEvent.TouchEnd:"touch_end"}; consume = False
             for point in event.touchPoints():
@@ -369,15 +382,18 @@ class CanvasTool:
     def _receive(self, sample):
         if not sample.kind.startswith("tablet_"): return False
         try:
-            if sample.kind == "tablet_press": self._begin(sample)
-            elif sample.kind == "tablet_move" and self.surface: self._append(sample)
-            elif sample.kind == "tablet_release" and self.surface: self._append(sample); self._commit()
-            return self.block_host
+            handled = False
+            if sample.kind == "tablet_press": self._begin(sample); handled = True
+            elif sample.kind == "tablet_move" and self.surface: self._append(sample); handled = True
+            elif sample.kind == "tablet_release" and self.surface: self._append(sample); self._commit(); handled = True
+            return self.block_host and handled
         except Exception as error:
             self._discard()
             try: krita.notify(f"Cakewalk tool error: {error}", "Cakewalk")
             except Exception: pass
-            return self.block_host
+            # Let Krita's selected tool receive the event when Cakewalk cannot
+            # safely start a stroke, for example on a locked or vector layer.
+            return False
     def _begin(self, sample):
         document = krita.require_document(); node = self.node_provider(document) if self.node_provider else document.activeNode()
         if node is None: raise RuntimeError("select a writable paint layer before using this tool")

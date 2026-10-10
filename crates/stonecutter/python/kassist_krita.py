@@ -18,7 +18,7 @@ except ImportError:
     Extension = object
 
 RGBA = "rgba"
-ELEMENT_BYTES = {"u8": 1, "u16": 2, "float16": 2, "float32": 4, 8: 1, 16: 2, 32: 4}
+ELEMENT_BYTES = {"u8": 1, "u16": 2, "f16": 2, "f32": 4, "float16": 2, "float32": 4, 8: 1, 16: 2, 32: 4}
 
 
 def _krita():
@@ -251,8 +251,18 @@ def active_canvas_widget():
     for candidate in (view, canvas):
         if candidate is None:
             continue
-        widget = getattr(candidate, "widget", lambda: candidate)()
-        if hasattr(widget, "installEventFilter"):
+        member = getattr(candidate, "widget", None)
+        widget = member() if callable(member) else member
+        # Krita's View wrapper can be a QObject and expose
+        # installEventFilter, but it is not a QWidget.  Cakewalk needs the
+        # QWidget-only setAttribute API for tablet and touch capture.
+        if widget is not None and hasattr(widget, "installEventFilter") and hasattr(widget, "setAttribute"):
+            return widget
+    qwindow = getattr(window, "qwindow", None) if window else None
+    qwindow = qwindow() if callable(qwindow) else qwindow
+    if qwindow is not None and hasattr(qwindow, "findChild"):
+        widget = qwindow.findChild(QObject, "view_0")
+        if widget is not None and hasattr(widget, "installEventFilter") and hasattr(widget, "setAttribute"):
             return widget
     return None
 
@@ -351,9 +361,12 @@ def notify(message, title="kassist"):
 def bytes_per_pixel(document):
     """Return how many bytes Krita stores per pixel for a document."""
     depth = document.colorDepth()
-    if depth not in ELEMENT_BYTES:
+    # Krita reports string depths as U8, U16, F16, or F32 on current
+    # versions, while older bindings may return lowercase or integer forms.
+    normalized = depth.strip().lower() if isinstance(depth, str) else depth
+    if normalized not in ELEMENT_BYTES:
         raise RuntimeError(f"unsupported color depth: {depth!r}")
-    return 4 * ELEMENT_BYTES[depth]
+    return 4 * ELEMENT_BYTES[normalized]
 
 
 def read_pixels(node, x=0, y=0, width=None, height=None):
@@ -419,9 +432,8 @@ def fill_layer_with_image(layer, image, document=None):
     write_pixels_rgba(
         layer, 0, 0, image.width(), image.height(), image_rgba(image), document
     )
-    layer.refreshProjection(0, 0, image.width(), image.height())
-    if document is not None:
-        document.refreshProjection()
+    # setPixelData schedules the projection update itself. Calling a refresh
+    # method here is not portable across Krita document and node wrappers.
     return layer
 
 
@@ -483,7 +495,6 @@ def place_image_as_reference(document, image, name="Reference image"):
             run_action("paste_as_reference_image", "paste_as_reference")
         finally:
             layer.remove()
-            document.refreshProjection()
             flush()
     return document
 

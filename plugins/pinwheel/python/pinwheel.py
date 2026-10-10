@@ -3,7 +3,7 @@ import os
 import uuid
 
 from krita import DockWidget
-from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtCore import QSignalBlocker, QTimer, QSize, Qt
 from PyQt5.QtGui import QIcon, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -101,8 +101,11 @@ class PinwheelDocker(DockWidget):
         self.store = ReferenceStore()
         content = QWidget(self)
         layout = QVBoxLayout(content)
-        self.filter = QLineEdit(placeholderText="Filter by filename or tag")
+        self.filter = QLineEdit(placeholderText="Search pins")
         self.filter.textChanged.connect(self.refresh)
+        self.tags = QLineEdit(placeholderText="Tags for selected pin, press Enter or Space")
+        self.tags.returnPressed.connect(self.apply_tags)
+        self.tags.textEdited.connect(self._space_commits_tags)
         self.list = QListWidget()
         self.list.setViewMode(QListView.IconMode)
         self.list.setResizeMode(QListView.Adjust)
@@ -128,15 +131,18 @@ class PinwheelDocker(DockWidget):
         split.setSizes([350, 220])
         layout.addWidget(self.filter)
         layout.addWidget(split)
+        layout.addWidget(self.tags)
         ComponentPanel("Pinwheel", self._dispatch_action).row(
             lambda ui: (
-                ui.button("Add references", "add")
-                .button("Edit tags", "edit_tags")
-                .button("Remove", "remove")
-                .button("Pop out on canvas", "pop_out")
+                ui.button("Add pins", "add")
+                .button("Apply tags", "edit_tags")
+                .button("Remove pin", "remove")
+                .button("Place on canvas", "pop_out")
             )
         ).button("Support with Gumroad", "activate").mount(layout)
         self.setWidget(content)
+        self._thumbnail_generation = 0
+        self._thumbnail_queue = []
         self.refresh()
 
     def canvasChanged(self, canvas):
@@ -155,27 +161,78 @@ class PinwheelDocker(DockWidget):
         elif action == "activate":
             self.activate_license()
 
+    def _space_commits_tags(self, text):
+        if text.endswith(" "):
+            self.apply_tags()
+
+    def apply_tags(self):
+        reference = self._selected_reference()
+        if not reference:
+            self.status_message("Select a pin before adding tags.")
+            return
+        tags = [tag.strip().lstrip("#") for tag in self.tags.text().replace(",", " ").split() if tag.strip()]
+        if not tags:
+            return
+        reference["tags"] = list(dict.fromkeys(reference["tags"] + tags))
+        self.store.save()
+        self.tags.clear()
+        self.refresh()
+
+    def status_message(self, message):
+        self.preview.setText(message)
+
     def refresh(self):
+        # Krita can restore this docker while it is still building its main
+        # window.  Loading every image here used to decode all saved reference
+        # files on the GUI thread in one turn, which could make startup look
+        # like a hang for a large or high-resolution reference library.
+        self._thumbnail_generation += 1
+        generation = self._thumbnail_generation
         needle = self.filter.text().strip().lower()
         previous = self._selected_reference()
         previous_id = previous["id"] if previous else None
-        self.list.clear()
-        for reference in self.store.items:
-            label = "{}  [{}]".format(
-                os.path.basename(reference["path"]), ", ".join(reference["tags"])
-            )
-            if needle and needle not in label.lower():
-                continue
-            item = QListWidgetItem(self._thumbnail(reference), label)
-            item.setData(Qt.UserRole, reference["id"])
-            item.setToolTip(label)
-            self.list.addItem(item)
-            if reference["id"] == previous_id:
-                self.list.setCurrentItem(item)
+        self._thumbnail_queue = []
+        blocker = QSignalBlocker(self.list)
+        try:
+            self.list.clear()
+            selected_item = None
+            for reference in self.store.items:
+                label = "{}  [{}]".format(
+                    os.path.basename(reference["path"]), ", ".join(reference["tags"])
+                )
+                if needle and needle not in label.lower():
+                    continue
+                item = QListWidgetItem(QIcon(), label)
+                item.setData(Qt.UserRole, reference["id"])
+                item.setToolTip(label)
+                self.list.addItem(item)
+                self._thumbnail_queue.append((item, reference))
+                if reference["id"] == previous_id:
+                    selected_item = item
+            if selected_item is not None:
+                self.list.setCurrentItem(selected_item)
+        finally:
+            del blocker
         if not self.list.currentItem():
             self.preview.setPixmap(QPixmap())
             self.preview.setText("Select a reference to review it.")
             self.details.setText("")
+        elif selected_item is not None:
+            self.preview_reference(selected_item, None)
+        QTimer.singleShot(0, lambda: self._load_thumbnail_batch(generation))
+
+    def _load_thumbnail_batch(self, generation):
+        """Load a few thumbnails, then yield back to Krita's event loop."""
+        if generation != self._thumbnail_generation:
+            return
+        for _ in range(min(4, len(self._thumbnail_queue))):
+            item, reference = self._thumbnail_queue.pop(0)
+            # A refreshed list deletes its old items, so only update items
+            # that still belong to the active generation.
+            if item.listWidget() is self.list:
+                item.setIcon(self._thumbnail(reference))
+        if self._thumbnail_queue:
+            QTimer.singleShot(0, lambda: self._load_thumbnail_batch(generation))
 
     @staticmethod
     def _thumbnail(reference):
@@ -220,15 +277,9 @@ class PinwheelDocker(DockWidget):
             "",
             "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
         )
-        tags, accepted = QInputDialog.getText(
-            self, "Reference tags", "Comma-separated tags"
-        )
-        if not accepted:
-            return
-        tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
         for path in paths:
             if os.path.isfile(path):
-                self.store.add(path, tags)
+                self.store.add(path, [])
         self.refresh()
 
     def activate_license(self):
@@ -239,23 +290,7 @@ class PinwheelDocker(DockWidget):
         self.setWindowTitle("Pinwheel references — " + message)
 
     def edit_tags(self):
-        if not is_licensed():
-            self.setWindowTitle("Pinwheel references — license required")
-            return
-        reference = self._selected_reference()
-        if not reference:
-            return
-        text, accepted = QInputDialog.getText(
-            self,
-            "Reference tags",
-            "Comma-separated tags",
-            text=", ".join(reference["tags"]),
-        )
-        if not accepted:
-            return
-        reference["tags"] = [tag.strip() for tag in text.split(",") if tag.strip()]
-        self.store.save()
-        self.refresh()
+        self.apply_tags()
 
     def remove_selected(self):
         if not is_licensed():
